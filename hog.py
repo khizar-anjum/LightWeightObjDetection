@@ -11,6 +11,7 @@ import glob
 from matplotlib.patches import Rectangle
 from matplotlib import pyplot as plt
 from sklearn.svm import LinearSVC
+from printer import printProgressBar 
 
 class hog_trainer:
     # this class defines a base hog trainer which will take in proposals from 
@@ -73,7 +74,7 @@ class hog_trainer:
         self.initialize_svm(folder)
         
         for epoch in range(epochs):
-            print('Epoch %d, step %d' % ((epoch + 1),1), end='\r')
+            printProgressBar(0, 4, prefix = 'Epoch %d'%(epoch+1), suffix = 'complete')
             # STEP 1: Mine for negative samples
             for i, img in enumerate(self.imgs):
                 boxes, scores = self.hog_desc.detectMultiScale(img)
@@ -82,13 +83,13 @@ class hog_trainer:
                 #cv2 indexing is different from numpy indexing
                 boxes[:,[0,1]] = boxes[:,[1,0]] 
                 self.neg_rects.append(boxes.tolist())
-            print('Epoch %d, step %d' % ((epoch + 1),2), end='\r')    
+            printProgressBar(1, 4, prefix = 'Epoch %d'%(epoch+1), suffix = 'complete')
             # STEP 2: Add those samples into dataset
             self.populate_data(False)
-            print('Epoch %d, step %d' % ((epoch + 1),3), end='\r')
+            printProgressBar(2, 4, prefix = 'Epoch %d'%(epoch+1), suffix = 'complete')
             # STEP 3: Prepare data
             X, y = self.prepare_data()
-            print('Epoch %d, step %d' % ((epoch + 1),4), end='\r')
+            printProgressBar(3, 4, prefix = 'Epoch %d'%(epoch+1), suffix = 'complete')
             # STEP 4: train the svm
             self.train_svm(X, y)
         print('Training successfully finished after %d epochs'%epochs)
