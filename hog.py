@@ -8,16 +8,22 @@ import cv2
 import numpy as np
 import pandas as pd
 import glob
-from matplotlib.patches import Rectangle
-from matplotlib import pyplot as plt
 from sklearn.svm import LinearSVC
 from printer import printProgressBar 
+import util
 
 class hog_trainer:
-    # this class defines a base hog trainer which will take in proposals from 
-    # edge boxes and then train according to images given
+    # this class defines a base hog trainer which takes in a folder (str) as an input
+    # and then trains an svm classifier based on given hog parameters using the 
+    # negative hard mining technique (this svm is used in cv2.HOGDescriptor.detectMultiScale)
+    # normal usage to train a folder full of images is given by:
+    # >> hog_t = hog_trainer(whatever parameters you want to initialize hog with)
+    # >> hog_t.hard_negative_mine(folder, epochs)
+    # after that, you export the svm weights from hog_t.svm_weights
+    # Very slow, dont use on a folder with more than 100 images
+    # Folder should have a text file of annotated rectangle patches
     def __init__(self, winSize = (64, 64), blockSize = (16, 16), blockStride = (8, 8), \
-                 cellSize = (8, 8), nbins = 9):
+                 cellSize = (8, 8), nbins = 9, overlap_thresh = 0.5, n = 5):
         self.winSize = winSize
         self.blockSize = blockSize
         self.blockStride = blockStride
@@ -36,8 +42,8 @@ class hog_trainer:
         self.pos_imgs = [] #a list of positive label images, with size equal to winSize
         self.neg_imgs = [] #a list of negative label images, with size equal to winSize
         
-        self.overlap_thresh = 0.5 #used to check if boxes overlap enough for detection
-        self.n = 5 #top number of detections for hard negative mining
+        self.overlap_thresh = overlap_thresh #used to check if boxes overlap enough for detection
+        self.n = n #top number of detections for hard negative mining
         
     def compute(self, img):
         return self.hog_desc.compute(img)
@@ -47,21 +53,22 @@ class hog_trainer:
         # if train = false, it automatically populate test_rects
         # be careful, removes negative rectangle information when done
         if positive:
+            self.pos_imgs = []
             for i, rects in enumerate(self.pos_rects):
                 images = []
                 for rect in rects:
-                    image = self.imgs[i][rect[0]:rect[0]+rect[2],\
-                                      rect[1]:rect[1]+rect[3],:]
+                    image = self.imgs[i][rect[0]:rect[2],\
+                                      rect[1]:rect[3],:]
                     try:
                         images.append(self.compute(cv2.resize(image, self.winSize)))
                     except: #if it cannot be resized, ignore the entry
-                        print(rect)
+                        print("couldn\'t parse",rect)
                 self.pos_imgs.append(images)
         else:
             for i, rects in enumerate(self.neg_rects):
                 for rect in rects:
-                    image = self.imgs[i][rect[0]:rect[0]+rect[2],\
-                                      rect[1]:rect[1]+rect[3],:]
+                    image = self.imgs[i][rect[0]:rect[2],\
+                                      rect[1]:rect[3],:]
                     try:
                         self.neg_imgs.append(self.compute(cv2.resize(image, self.winSize)))
                     except: #if it cannot be resized, ignore the entry
@@ -74,30 +81,42 @@ class hog_trainer:
         self.initialize_svm(folder)
         
         for epoch in range(epochs):
-            printProgressBar(0, 4, prefix = 'Epoch %d'%(epoch+1), suffix = 'complete')
+            printProgressBar(epoch+1, epochs, prefix = 'Epoch %d'%(epoch+1), suffix = 'complete')
             # STEP 1: Mine for negative samples
             for i, img in enumerate(self.imgs):
                 boxes, scores = self.hog_desc.detectMultiScale(img)
-                boxes, scores, _ = self.topn(boxes,scores,self.n)
-                boxes, scores, _ = self.nms(boxes,scores)
-                #cv2 indexing is different from numpy indexing
-                boxes[:,[0,1]] = boxes[:,[1,0]] 
-                self.neg_rects.append(boxes.tolist())
-            printProgressBar(1, 4, prefix = 'Epoch %d'%(epoch+1), suffix = 'complete')
+                if not isinstance(boxes,tuple): #because if boxes is tuple, its empty
+                    boxes = util.cv2_to_numpy(boxes)
+                    boxes, scores = self.filter_negsamples(boxes, scores,i)
+                    if(boxes.shape[0] > self.n): #only do it if more than n samples
+                        boxes, scores, _ = self.topn(boxes,scores,self.n)
+                    if(boxes.shape[0] > 0): #only do it some boxes survive the journey
+                        boxes, scores, _ = self.nms(boxes,scores)
+                        self.neg_rects.append(boxes.tolist())
+            #    else:
+            #        print("no boxes detected!")
+                
             # STEP 2: Add those samples into dataset
+            self.populate_data(True)
             self.populate_data(False)
-            printProgressBar(2, 4, prefix = 'Epoch %d'%(epoch+1), suffix = 'complete')
+            
             # STEP 3: Prepare data
             X, y = self.prepare_data()
-            printProgressBar(3, 4, prefix = 'Epoch %d'%(epoch+1), suffix = 'complete')
+            
             # STEP 4: train the svm
             self.train_svm(X, y)
         print('Training successfully finished after %d epochs'%epochs)
         
+    def filter_negsamples(self, boxes, scores, i):
+        pos_boxes = np.squeeze(np.array(self.pos_rects[i]))
+        overlaps = self.box_overlap(pos_boxes, boxes)
+        thresh_boxes = np.sum(overlaps > self.overlap_thresh, axis=0) > 0
+        if any(thresh_boxes):
+            self.pos_rects[i] = self.pos_rects[i] + boxes[thresh_boxes].tolist()
+        return boxes[~thresh_boxes], scores[~thresh_boxes] #picking boxes which do not overlap
+        
     def nms(self, boxes, scores):
         "Return a tensor of boolean values with True for the boxes to retain"
-        boxes[:,2] = boxes[:,0] + boxes[:,2]
-        boxes[:,3] = boxes[:,1] + boxes[:,3]
         n = len(boxes)
         scores_ = scores.copy()
         retain = np.zeros(n).astype(bool)
@@ -164,42 +183,59 @@ class hog_trainer:
         self.hog_desc.setSVMDetector(self.svm_weights)
             
     def prepare_data(self):
-        posX = np.array(self.pos_imgs)
+        #just flattening a list of lists
+        posX = np.array([item for sublist in self.pos_imgs for item in sublist])
         posY = np.ones((posX.shape[0]))
         if self.neg_imgs != []:
-            negX = np.expand_dims(np.array(self.neg_imgs),axis=1)
+            negX = np.array(self.neg_imgs)
             negY = np.zeros((negX.shape[0]))
             
         else:
             negX = self.compute(np.random.randint(0,high=225,\
                                 size=self.winSize + (3,)).astype('uint8'))
-            negX = np.expand_dims(np.expand_dims(negX,axis=0),axis=0)
+            negX = np.expand_dims(negX,axis=0)
             negY = np.zeros((1,))
         X = np.vstack((posX, negX))
         Y = np.hstack((posY, negY))
         return np.squeeze(X), np.squeeze(Y)
                 
-
-        
     def read_imgs(self, folder):
         textfile = glob.glob(folder+'/*.txt')[0]
         df = pd.read_csv(textfile, names=['name','x','y','w','h'],sep=' ')
         df = df.dropna()
         df = df.set_index('name')
-        df = df.reindex(columns=['y','x','w','h']) #taking care of matlab quirk
+        df['w'] = df['x'] + df['w']
+        df['h'] = df['y'] + df['h']
+        df = df.reindex(columns=['y','x','h','w']) #taking care of matlab quirk
         for file in set(df.index):
             self.imgs.append(cv2.imread(folder + '/' + file))
             self.pos_rects.append([df.loc[file].values.astype(int).tolist()])
+ 
+class infer_hog():
+    # this class is used to infer if a given proposal coming from edgeboxes 
+    # proposal function is an object of interest or not. Basically, we just see 
+    # if a incoming proposals score positive on the SVM plane or not after
+    # computing their hog features
+    def __init__(self, svm_weights, winSize = (64, 64), blockSize = (16, 16), \
+                 blockStride = (8, 8), cellSize = (8, 8), nbins = 9):
+        # expects svm_weights of shape (N,)
+        self.winSize = winSize
+        self.blockSize = blockSize
+        self.blockStride = blockStride
+        self.cellSize = cellSize
+        self.nbins = nbins
         
-    def plot_box(self, box, color='y'):
-        #imported from lab.py from category detection 2019 pytorch version
-        r1 = Rectangle(box[:2],
-                       box[2], box[3],
-                       facecolor='none', linestyle='solid',
-                       edgecolor=color, linewidth=3)
-        r2 = Rectangle(box[:2],
-                       box[2], box[3],
-                       facecolor='none', linestyle='solid',
-                       edgecolor='k', linewidth=5)
-        plt.gca().add_patch(r2)
-        plt.gca().add_patch(r1)
+        self.hog_desc = cv2.HOGDescriptor (self.winSize, self.blockSize, self.blockStride,\
+                 self.cellSize, self.nbins)
+        assert svm_weights.shape[0] == (self.hog_desc.getDescriptorSize() + 1), \
+                    "Number of SVM weights should be equal to descriptor size"
+        self.svm_weights = svm_weights
+        
+    def infer(self, proposals):
+        # expects proposals in a list (image patches)
+        scores = []
+        for p in proposals:
+            hogf = self.hog_desc.compute(cv2.resize(p,self.winSize))
+            s = self.svm_weights[:-1] @ hogf + self.svm_weights[-1]
+            scores.append(s)
+        return scores
