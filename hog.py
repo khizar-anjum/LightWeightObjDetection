@@ -9,7 +9,6 @@ import numpy as np
 import pandas as pd
 import glob
 from sklearn.svm import LinearSVC
-from printer import printProgressBar 
 import util
 
 class hog_trainer:
@@ -79,9 +78,7 @@ class hog_trainer:
         # this function is used to  train svm by hard negative mining
         #initializing svm with default weights of positive sample means
         self.initialize_svm(folder)
-        
         for epoch in range(epochs):
-            printProgressBar(epoch+1, epochs, prefix = 'Epoch %d'%(epoch+1), suffix = 'complete')
             # STEP 1: Mine for negative samples
             for i, img in enumerate(self.imgs):
                 boxes, scores = self.hog_desc.detectMultiScale(img)
@@ -105,6 +102,7 @@ class hog_trainer:
             
             # STEP 4: train the svm
             self.train_svm(X, y)
+            util.printProgressBar(epoch+1, epochs, prefix = 'Epoch %d'%(epoch+1), suffix = 'complete')
         print('Training successfully finished after %d epochs'%epochs)
         
     def filter_negsamples(self, boxes, scores, i):
