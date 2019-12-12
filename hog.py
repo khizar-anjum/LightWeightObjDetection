@@ -9,7 +9,9 @@ import numpy as np
 import pandas as pd
 import glob
 from sklearn.svm import LinearSVC
+from edgeboxes import edgeboxes
 import util
+import pickle
 
 class hog_trainer:
     # this class defines a base hog trainer which takes in a folder (str) as an input
@@ -22,16 +24,18 @@ class hog_trainer:
     # Very slow, dont use on a folder with more than 100 images
     # Folder should have a text file of annotated rectangle patches
     def __init__(self, winSize = (64, 64), blockSize = (16, 16), blockStride = (8, 8), \
-                 cellSize = (8, 8), nbins = 9, overlap_thresh = 0.5, n = 5):
+                 cellSize = (8, 8), nbins = 9, overlap_thresh = 0.5, n = 5, maxBoxes = 30):
         self.winSize = winSize
         self.blockSize = blockSize
         self.blockStride = blockStride
         self.cellSize = cellSize
         self.nbins = nbins
+        self.maxBoxes = maxBoxes
         
-        self.hog_desc = cv2.HOGDescriptor (self.winSize, self.blockSize, self.blockStride,\
+        self.hog_desc = cv2.HOGDescriptor(self.winSize, self.blockSize, self.blockStride,\
                  self.cellSize, self.nbins)
         self.svm_weights = np.zeros((self.hog_desc.getDescriptorSize() + 1, 1))
+        self.edgebox = edgeboxes(maxBoxes = self.maxBoxes)
         self.svm = LinearSVC()
         
         self.hog_desc.setSVMDetector(self.svm_weights)
@@ -78,10 +82,11 @@ class hog_trainer:
         # this function is used to  train svm by hard negative mining
         #initializing svm with default weights of positive sample means
         self.initialize_svm(folder)
+        util.printProgressBar(0, epochs, prefix = 'Starting', suffix = 'complete')
         for epoch in range(epochs):
             # STEP 1: Mine for negative samples
             for i, img in enumerate(self.imgs):
-                boxes, scores = self.hog_desc.detectMultiScale(img)
+                boxes, scores = self.edgebox.getproposals(img)
                 if not isinstance(boxes,tuple): #because if boxes is tuple, its empty
                     boxes = util.cv2_to_numpy(boxes)
                     boxes, scores = self.filter_negsamples(boxes, scores,i)
@@ -208,26 +213,66 @@ class hog_trainer:
         for file in set(df.index):
             self.imgs.append(cv2.imread(folder + '/' + file))
             self.pos_rects.append([df.loc[file].values.astype(int).tolist()])
+
+class hog_multi_trainer():
+    # this class is used to train multiple hog models (svm weights basically)
+    # and then save them in files so that they are easy to read afterwards.
+    # it saves them in ./hog/{sign}/{filnameAccordingToConvention.pkl}
+    def __init__(self, params, sign, folder, epochs):
+        """
+        params: a list containing [maxBoxes, blockSize, cellSize, nbins] in this order
+        sign: the traffic sign from KUL dataset we are working with
+        folder: the folder which contains all the training images
+        epochs: number of epochs to run a trainer for
+        """
+        self.params = params
+        self.sign = sign
+        self.folder = folder
+        self.epochs = epochs
+        
+    def train(self):
+        for p in self.params:
+            self.maxBoxes, self.blockSize, self.cellSize, self.nbins = p
+            hog = hog_trainer(blockSize = self.blockSize, maxBoxes = self.maxBoxes,\
+                             cellSize = self.cellSize, nbins = self.nbins)
+            hog.hard_negative_mine(self.folder, self.epochs)
+            self.save_config(hog.svm_weights)
+        
+    def save_config(self, weights):
+        # uses pickle to save all the information used to train the model
+        # filename is chosen according to the configuration of params
+        filename = util.params_to_filename([self.sign, self.maxBoxes, self.blockSize, \
+                                                self.cellSize, self.nbins])
+        with open(filename, 'wb') as f:  # Python 3: open(..., 'wb')
+            pickle.dump(weights, f)
+
  
-class infer_hog():
+class hog_predictor():
     # this class is used to infer if a given proposal coming from edgeboxes 
     # proposal function is an object of interest or not. Basically, we just see 
     # if a incoming proposals score positive on the SVM plane or not after
     # computing their hog features
-    def __init__(self, svm_weights, winSize = (64, 64), blockSize = (16, 16), \
-                 blockStride = (8, 8), cellSize = (8, 8), nbins = 9):
-        # expects svm_weights of shape (N,)
-        self.winSize = winSize
-        self.blockSize = blockSize
-        self.blockStride = blockStride
-        self.cellSize = cellSize
-        self.nbins = nbins
+    # class that defines a edgeboxes->hog->svm predictor
+    def __init__(self, filename):
+        self.sign, self.maxBoxes, self.blockSize, self.cellSize, \
+                self.nbins = util.parse_filename(filename)
+        self.load_config(filename)
         
-        self.hog_desc = cv2.HOGDescriptor (self.winSize, self.blockSize, self.blockStride,\
-                 self.cellSize, self.nbins)
-        assert svm_weights.shape[0] == (self.hog_desc.getDescriptorSize() + 1), \
-                    "Number of SVM weights should be equal to descriptor size"
-        self.svm_weights = svm_weights
+    def info(self):
+        return {self.edgebox.maxBoxes, self.hog.blockSize, self.hog.cellSize, self.nbins}
+        
+    def predict(self, image):
+        p = self.edgebox.getproposals(image)
+        scores = self.infer(p)
+        return p, scores
+    
+    def load_config(self, filename):
+        # uses pickle to load all the tunable parameter information
+        with open(filename,'rb') as f:
+            self.svm_weights = pickle.load(f)
+        self.edgebox = edgeboxes(maxBoxes = self.maxBoxes)
+        self.hog_desc = cv2.HOGDescriptor((64,64), self.blockSize, (8,8),\
+                                          self.cellSize, self.nbins)        
         
     def infer(self, proposals):
         # expects proposals in a list (image patches)

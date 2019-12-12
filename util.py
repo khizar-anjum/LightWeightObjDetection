@@ -71,7 +71,7 @@ def plot_boxes(boxes, format_ = 'cv2'):
         plot_box(box.tolist())
     
 # Print iterations progress
-def printProgressBar (iteration, total, prefix = '', suffix = '', decimals = 1, length = 100, fill = 'â–ˆ', printEnd = "\r"):
+def printProgressBar (iteration, total, prefix = '', suffix = '', decimals = 1, length = 100, fill = '#', printEnd = "\r"):
     """
     Call in a loop to create terminal progress bar
     @params:
@@ -91,3 +91,18 @@ def printProgressBar (iteration, total, prefix = '', suffix = '', decimals = 1, 
     # Print New Line on Complete
     if iteration == total: 
         print()
+        
+def params_to_filename(params):
+    # takes in params in a list
+    # the order should always be [sign, maxBoxes, blockSize, cellSize, nbins]
+    # cellsize and blockSize should be tuples i.e. (32,32) or (64,64)
+    filename = str(params[1]) + '_' + str(params[2][0]) + '_' +\
+                    str(params[3][0]) + '_' + str(params[4]) + '.pkl'
+    filename = 'params/' + params[0] + '/' + filename
+    return filename
+
+def parse_filename(filename):
+    _, sign, params = filename.split('/')
+    params, _ = params.split('.')
+    BB, bsize, csize, nbins = params.split('_')
+    return sign, BB, (bsize, bsize), (csize, csize), nbins

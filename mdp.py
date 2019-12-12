@@ -12,6 +12,16 @@ from hog import hog_trainer
 from itertools import product
 
 
+class objdetEnv():
+    # This class defines the environment to train object detection for training 
+    # an mdp. The methods of this environment are loosely defined on the principles
+    # of openAI gym environments. However, this class does not inherit from that 
+    # and hence is flexible. But it is designed in a way that if you want to port
+    # it to an OpenAI gym environment, it should be easy enough.
+    def __init__(self, action_space, state_space):
+        pass
+
+
 class mdp_trainer():
     # This class is intended to train an MDP. Parameters are {BB, bsize, csize, nhist}.
     # parameters are first defined as lists and then we define the state-space to be every 
@@ -30,4 +40,7 @@ class mdp_trainer():
         self.csize = csize
         self.nhist = nhist
         all_list = [BB, bsize, csize, nhist]
-        self.states = list(product(*all_list))
+        self.states = list(product(*all_list)) #all permutations of states
+        
+    def train():
+        pass

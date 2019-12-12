@@ -1,0 +1,5 @@
+For a specific sign (B5, in this case), all these files were generated via:
+`
+hmt = hog_multi_trainer(params, sign, folder, epochs)
+hmt.train()
+`
