@@ -8,7 +8,11 @@ File for the purpose of saving functions that are used often
 """
 from matplotlib.patches import Rectangle
 from matplotlib import pyplot as plt
-
+from glob import glob
+import pandas as pd
+import cv2
+import numpy as np
+import pickle
 """
 cv2/matplotlib box representation format: (x,y,w,h) where x is along width
     and y is along height of the image with origin at the top-left corner
@@ -43,7 +47,21 @@ def numpy_to_cv2(np_boxes):
     boxes[:,2] = boxes[:,2] - boxes[:,0]
     boxes[:,3] = boxes[:,3] - boxes[:,1]
     return boxes
-
+    def nms(self, boxes, scores):
+        "Return a tensor of boolean values with True for the boxes to retain"
+        n = len(boxes)
+        scores_ = scores.copy()
+        retain = np.zeros(n).astype(bool)
+        minf = float('-inf')
+        while True:
+            best = np.amax(scores_, 0)
+            index = np.argmax(scores_,0)
+            if best <= float('-inf'):
+                return boxes[retain], scores[retain], retain
+            retain[index] = 1
+            collision = (self.box_overlap(np.squeeze(boxes[index]), boxes) > \
+                         self.overlap_thresh).reshape(-1)
+            scores_= np.where(np.expand_dims(collision,axis=1), minf, scores_)
 def plot_box(box, color='y'):
     #imported from lab.py from category detection 2019 pytorch version
     #input box must be in cv2/matplotlib format
@@ -94,7 +112,7 @@ def printProgressBar (iteration, total, prefix = '', suffix = '', decimals = 1, 
         
 def params_to_filename(params):
     # takes in params in a list
-    # the order should always be [sign, maxBoxes, blockSize, cellSize, nbins]
+    # the order should always be [sign, maxBoxes, blockSize, cellSize, nbins, svm_weights]
     # cellsize and blockSize should be tuples i.e. (32,32) or (64,64)
     filename = str(params[1]) + '_' + str(params[2][0]) + '_' +\
                     str(params[3][0]) + '_' + str(params[4]) + '.pkl'
@@ -104,5 +122,139 @@ def params_to_filename(params):
 def parse_filename(filename):
     _, sign, params = filename.split('/')
     params, _ = params.split('.')
-    BB, bsize, csize, nbins = params.split('_')
-    return sign, BB, (bsize, bsize), (csize, csize), nbins
+    BB, bsize, csize, nbins = [int(x) for x in params.split('_')]
+    return sign, (BB, (bsize, bsize), (csize, csize), nbins)
+
+def read_imgs(folder):
+    imgs = []
+    pos_rects = []
+    textfile = glob(folder+'/*.txt')[0]
+    df = pd.read_csv(textfile, names=['name','x','y','w','h'],sep=' ')
+    df = df.dropna()
+    df = df.set_index('name')
+    df['w'] = df['x'] + df['w']
+    df['h'] = df['y'] + df['h']
+    df = df.reindex(columns=['y','x','h','w']) #taking care of matlab quirk
+    for file in set(df.index):
+        imgs.append(cv2.imread(folder + '/' + file))
+        pos_rects.append([df.loc[file].values.astype(int).tolist()])
+    return imgs, pos_rects
+
+def box_overlap(boxes1, boxes2, measure='iou'):
+    """Compute the intersection over union of bounding boxes
+
+    Arguments:
+        boxes1 {numpy array} -- N1 x 4 tensor with [x0,y0,x1,y1] for N boxes.
+                                 
+        boxes2 {numpy array} -- N2 x 4 tensor.
+
+    Returns:
+        torch.Tensor -- N1 x N2 tensor with the IoU overlaps.
+    """
+    boxes1 = boxes1.reshape(-1,1,4)
+    boxes2 = boxes2.reshape(1,-1,4)
+    areas1 = np.prod(boxes1[:,:,:2] - boxes1[:,:,2:], 2)
+    areas2 = np.prod(boxes2[:,:,:2] - boxes2[:,:,2:], 2)
+
+    max_ = np.maximum(boxes1[:,:,:2], boxes2[:,:,:2])
+    min_ = np.minimum(boxes1[:,:,2:], boxes2[:,:,2:])
+    intersections = np.prod(np.clip(min_ - max_, 0, float('inf')), 2)
+
+    overlaps = intersections / (areas1 + areas2 - intersections)
+    return overlaps
+
+def nms(boxes, scores, overlap_thresh):
+    "Return a tensor of boolean values with True for the boxes to retain"
+    n = len(boxes)
+    scores_ = scores.copy()
+    retain = np.zeros(n).astype(bool)
+    minf = float('-inf')
+    while True:
+        best = np.amax(scores_, 0)
+        index = np.argmax(scores_,0)
+        if best <= float('-inf'):
+            return boxes[retain], scores[retain], retain
+        retain[index] = 1
+        collision = (box_overlap(np.squeeze(boxes[index]), boxes) > \
+                     overlap_thresh).reshape(-1)
+        scores_= np.where(np.expand_dims(collision,axis=1), minf, scores_)
+        
+def topn(boxes, scores, n):
+    "Sort the boxes and return the top n"
+    n = min(n, len(boxes))
+    perm = np.argsort(scores,axis=0)[::-1]
+    scores = scores[np.squeeze(perm),:]
+    perm = perm[:n]
+    scores = scores[:n]
+    boxes = boxes[np.squeeze(perm),:]
+    return boxes, scores, perm
+
+def load_params(folder):
+    "used to read files from a params folder"
+    params = []
+    for file in glob(folder + '/*.pkl'):
+        sign, param = parse_filename(file)
+        with open(file,'rb') as f:
+            param = param + (pickle.load(f),)
+        params.append(param)
+    return sign, params
+
+def sort(scores, descending = False):
+    indices = np.argsort(scores,axis=0)
+    scores = np.sort(scores,axis=0)
+    if descending:
+        indices = np.flip(indices)
+        scores = np.flip(scores)
+    return scores, indices
+
+def pr(labels, scores, misses=0, plot=True):
+    "Plot the precision-recall curve."
+    scores, perm = sort(scores, descending=True)
+    labels = labels[np.squeeze(perm)]
+    tp = (labels > 0).astype(np.float32)
+    ttp = np.cumsum(tp, axis=0)
+    precision = np.divide(ttp , np.arange(1, len(tp)+1, dtype=np.float32))
+    recall = ttp / np.clip(tp.sum() + misses, a_min=1, a_max=None)
+    # Labels may contain no positive labels (perhaps because misses>0)
+    # which would case mean() to nan
+    ap = precision[tp > 0]
+    ap = ap.mean() if len(ap) > 0 else 0
+    if plot:
+        plt.plot(recall, precision)
+        plt.xlabel('recall')
+        plt.ylabel('precision')
+        plt.xlim(0,1.01)
+        plt.ylim(0,1.01)
+    return precision, recall, ap
+
+def plotResults(results, pOptimal):
+    "plots results generated by paretoOptimal.evaluate_params"
+    for i, res in enumerate([results, pOptimal]):
+        vals = [v for _, v in res.items()]
+        vals = np.array(vals)
+        X, y = vals[:,0], vals[:,1]
+        y = y/np.min(y)
+        if(i == 0): plt.plot(X, y,'bo')
+        else: plt.plot(X, y,'ro')
+    plt.xlabel('Area under curve (AUC)')
+    plt.ylabel('Speedup')
+    plt.show()
+    
+def selectparetoOptimal(results):
+    #there is still some problem in it. 12/12
+    "results paretoOptimal params from the ones generated by paretoOptimal.evaluate_params"
+    vals = [v for _, v in results.items()]
+    keys = [k for k, _ in results.items()]
+    vals = np.array(vals)
+    X, y = vals[:,0], vals[:,1] #x is auc, y is speedup
+    y = y/np.min(y)
+    pOptimal = []
+    notOptim = []
+    for i, _ in enumerate(vals):
+        if(not any(np.logical_and(X > X[i], y > y[i]))):
+            pOptimal.append(keys[i])
+        else:
+            notOptim.append(keys[i])
+    opres = {p:results[p] for p in pOptimal}
+    notop = {p:results[p] for p in notOptim}
+    return notop, opres

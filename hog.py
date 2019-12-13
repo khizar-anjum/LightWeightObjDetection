@@ -6,8 +6,6 @@
 
 import cv2
 import numpy as np
-import pandas as pd
-import glob
 from sklearn.svm import LinearSVC
 from edgeboxes import edgeboxes
 import util
@@ -91,9 +89,9 @@ class hog_trainer:
                     boxes = util.cv2_to_numpy(boxes)
                     boxes, scores = self.filter_negsamples(boxes, scores,i)
                     if(boxes.shape[0] > self.n): #only do it if more than n samples
-                        boxes, scores, _ = self.topn(boxes,scores,self.n)
+                        boxes, scores, _ = util.topn(boxes,scores,self.n)
                     if(boxes.shape[0] > 0): #only do it some boxes survive the journey
-                        boxes, scores, _ = self.nms(boxes,scores)
+                        boxes, scores, _ = util.nms(boxes,scores, self.overlap_thresh)
                         self.neg_rects.append(boxes.tolist())
             #    else:
             #        print("no boxes detected!")
@@ -112,71 +110,21 @@ class hog_trainer:
         
     def filter_negsamples(self, boxes, scores, i):
         pos_boxes = np.squeeze(np.array(self.pos_rects[i]))
-        overlaps = self.box_overlap(pos_boxes, boxes)
+        overlaps = util.box_overlap(pos_boxes, boxes)
         thresh_boxes = np.sum(overlaps > self.overlap_thresh, axis=0) > 0
         if any(thresh_boxes):
             self.pos_rects[i] = self.pos_rects[i] + boxes[thresh_boxes].tolist()
         return boxes[~thresh_boxes], scores[~thresh_boxes] #picking boxes which do not overlap
         
-    def nms(self, boxes, scores):
-        "Return a tensor of boolean values with True for the boxes to retain"
-        n = len(boxes)
-        scores_ = scores.copy()
-        retain = np.zeros(n).astype(bool)
-        minf = float('-inf')
-        while True:
-            best = np.amax(scores_, 0)
-            index = np.argmax(scores_,0)
-            if best <= float('-inf'):
-                return boxes[retain], scores[retain], retain
-            retain[index] = 1
-            collision = (self.box_overlap(np.squeeze(boxes[index]), boxes) > \
-                         self.overlap_thresh).reshape(-1)
-            scores_= np.where(np.expand_dims(collision,axis=1), minf, scores_)    
-            
-    def box_overlap(self, boxes1, boxes2, measure='iou'):
-        """Compute the intersection over union of bounding boxes
-    
-        Arguments:
-            boxes1 {torch.Tensor} -- N1 x 4 tensor with [x0,y0,x1,y1] for N boxes.
-                                     For one box, a 4 tensor is also supported.
-            boxes2 {torch.Tensor} -- N2 x 4 tensor.
-    
-        Returns:
-            torch.Tensor -- N1 x N2 tensor with the IoU overlaps.
-        """
-        boxes1 = boxes1.reshape(-1,1,4)
-        boxes2 = boxes2.reshape(1,-1,4)
-        areas1 = np.prod(boxes1[:,:,:2] - boxes1[:,:,2:], 2)
-        areas2 = np.prod(boxes2[:,:,:2] - boxes2[:,:,2:], 2)
-    
-        max_ = np.maximum(boxes1[:,:,:2], boxes2[:,:,:2])
-        min_ = np.minimum(boxes1[:,:,2:], boxes2[:,:,2:])
-        intersections = np.prod(np.clip(min_ - max_, 0, float('inf')), 2)
-    
-        overlaps = intersections / (areas1 + areas2 - intersections)
-        return overlaps
-    
-    def topn(self, boxes, scores, n):
-        "Sort the boexes and return the top n"
-        n = min(n, len(boxes))
-        perm = np.argsort(scores,axis=0)[::-1]
-        scores = scores[np.squeeze(perm),:]
-        perm = perm[:n]
-        scores = scores[:n]
-        boxes = boxes[np.squeeze(perm),:]
-        return boxes, scores, perm
-        
     def initialize_svm(self, folder):
         #used to initialize the weights for svm
-        self.read_imgs(folder)
+        self.imgs, self.pos_rects = util.read_imgs(folder)
         self.populate_data(True)
         # no need to call it for negative images yet
         
         #training svm with only positive examples to initialize weights
         X, y = self.prepare_data()
-        self.train_svm(X,y)
-                
+        self.train_svm(X,y)         
             
     def train_svm(self, X, y):
         # fits the svm and updates the svm weights as well as cv2 hogdescriptor 
@@ -201,18 +149,6 @@ class hog_trainer:
         X = np.vstack((posX, negX))
         Y = np.hstack((posY, negY))
         return np.squeeze(X), np.squeeze(Y)
-                
-    def read_imgs(self, folder):
-        textfile = glob.glob(folder+'/*.txt')[0]
-        df = pd.read_csv(textfile, names=['name','x','y','w','h'],sep=' ')
-        df = df.dropna()
-        df = df.set_index('name')
-        df['w'] = df['x'] + df['w']
-        df['h'] = df['y'] + df['h']
-        df = df.reindex(columns=['y','x','h','w']) #taking care of matlab quirk
-        for file in set(df.index):
-            self.imgs.append(cv2.imread(folder + '/' + file))
-            self.pos_rects.append([df.loc[file].values.astype(int).tolist()])
 
 class hog_multi_trainer():
     # this class is used to train multiple hog models (svm weights basically)
@@ -253,32 +189,39 @@ class hog_predictor():
     # if a incoming proposals score positive on the SVM plane or not after
     # computing their hog features
     # class that defines a edgeboxes->hog->svm predictor
-    def __init__(self, filename):
-        self.sign, self.maxBoxes, self.blockSize, self.cellSize, \
-                self.nbins = util.parse_filename(filename)
+    def __init__(self, filename, winSize = (64,64), blockStride = (8,8)):
+        self.winSize = winSize
+        self.blockStride = blockStride
+        self.sign, (self.maxBoxes, self.blockSize, self.cellSize, \
+                self.nbins) = util.parse_filename(filename)
         self.load_config(filename)
         
     def info(self):
         return {self.edgebox.maxBoxes, self.hog.blockSize, self.hog.cellSize, self.nbins}
         
-    def predict(self, image):
-        p = self.edgebox.getproposals(image)
-        scores = self.infer(p)
-        return p, scores
+    def predict(self, image, n, overlap_thresh):
+        boxes, scores = self.edgebox.getproposals(image) #edgeboxes also gives scores
+        boxes = util.cv2_to_numpy(boxes)
+        boxes, scores, _ = util.topn(boxes, scores, n)
+        boxes, scores, _ = util.nms(boxes, scores, overlap_thresh)
+        scores = self.infer(image, boxes)
+        return boxes, scores
     
     def load_config(self, filename):
         # uses pickle to load all the tunable parameter information
         with open(filename,'rb') as f:
             self.svm_weights = pickle.load(f)
         self.edgebox = edgeboxes(maxBoxes = self.maxBoxes)
-        self.hog_desc = cv2.HOGDescriptor((64,64), self.blockSize, (8,8),\
-                                          self.cellSize, self.nbins)        
+        self.hog_desc = cv2.HOGDescriptor(self.winSize, self.blockSize, self.blockStride,\
+                                          self.cellSize, self.nbins) 
+        self.hog_desc.setSVMDetector(self.svm_weights)
         
-    def infer(self, proposals):
+    def infer(self, image, proposals):
         # expects proposals in a list (image patches)
         scores = []
         for p in proposals:
-            hogf = self.hog_desc.compute(cv2.resize(p,self.winSize))
+            hogf = self.hog_desc.compute(cv2.resize(image[p[0]:p[2], p[1]:p[3], :],self.winSize))
+            #hogf, s = self.hog_desc.detect(image[p[0]:p[2], p[1]:p[3], :])
             s = self.svm_weights[:-1] @ hogf + self.svm_weights[-1]
-            scores.append(s)
-        return scores
+            scores.append(s[0])
+        return np.expand_dims(np.array(scores),1)
