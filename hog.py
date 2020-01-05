@@ -189,11 +189,12 @@ class hog_predictor():
     # if a incoming proposals score positive on the SVM plane or not after
     # computing their hog features
     # class that defines a edgeboxes->hog->svm predictor
-    def __init__(self, filename, winSize = (64,64), blockStride = (8,8)):
+    def __init__(self, filename, winSize = (64,64), blockStride = (8,8), use_cuda = False):
         self.winSize = winSize
         self.blockStride = blockStride
         self.sign, (self.maxBoxes, self.blockSize, self.cellSize, \
                 self.nbins) = util.parse_filename(filename)
+        self.use_cuda = use_cuda
         self.load_config(filename)
         
     def info(self):
@@ -212,9 +213,14 @@ class hog_predictor():
         with open(filename,'rb') as f:
             self.svm_weights = pickle.load(f)
         self.edgebox = edgeboxes(maxBoxes = self.maxBoxes)
-        self.hog_desc = cv2.HOGDescriptor(self.winSize, self.blockSize, self.blockStride,\
+        if self.use_cuda:
+            self.hog_desc = cv2.cuda.HOG_create(self.winSize, self.blockSize, self.blockStride,\
+                                          self.cellSize, self.nbins)
+        else:
+            self.hog_desc = cv2.HOGDescriptor(self.winSize, self.blockSize, self.blockStride,\
                                           self.cellSize, self.nbins) 
-        self.hog_desc.setSVMDetector(self.svm_weights)
+        print(self.svm_weights.shape)
+        self.hog_desc.setSVMDetector(np.expand_dims(self.svm_weights.astype(np.float32),axis=0))
         
     def infer(self, image, proposals):
         # expects proposals in a list (image patches)

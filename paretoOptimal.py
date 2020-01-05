@@ -17,7 +17,7 @@ import util
 
 class paretoOptimalAnalysis():
     "used to perform speed-up/AUC analysis to select paretoOptimal params"
-    def __init__(self, param_folder, data_folder, overlap_thresh = 0.5, n = 100):
+    def __init__(self, param_folder, data_folder, overlap_thresh = 0.5, n = 100, use_cuda = False):
         """
         data_folder: the folder of a sequence that has ground-truth (can be BU-RU dataset, look into this)
         param_folder: folder in which all params files are populated already using hog_multi_trainer
@@ -29,11 +29,13 @@ class paretoOptimalAnalysis():
         
         self.overlap_thresh = overlap_thresh
         self.n = n
+        self.use_cuda = use_cuda
         
     def evaluate_params(self):
         eval_results = {}
         for param in self.params:
-            hogInfer = hog_predictor(util.params_to_filename([self.sign] + list(param)))
+            hogInfer = hog_predictor(util.params_to_filename([self.sign] + list(param)),\
+                                     use_cuda = self.use_cuda)
             results = self.evaluate_model(hogInfer)
             _, _, overall_auc = util.pr(results['labels'], results['scores'], \
                                   misses = results['misses'], plot=False)

@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 Created on Thu Dec 12 00:57:32 2019
@@ -38,6 +37,12 @@ what = e.getproposals(img)
 #from paretoOptimal import paretoOptimalAnalysis
 #poa = paretoOptimalAnalysis(param_folder, folder)
 #results = poa.evaluate_params()
-import util
-notop, opres = util.selectparetoOptimal(results)
-util.plotResults(notop, opres)
+#import util
+#notop, opres = util.selectparetoOptimal(results)
+#util.plotResults(notop, opres)
+
+
+#%% testing cuda hog detector
+from paretoOptimal import paretoOptimalAnalysis
+poa = paretoOptimalAnalysis(param_folder, folder, use_cuda = True)
+results = poa.evaluate_params()
