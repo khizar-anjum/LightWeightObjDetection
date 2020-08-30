@@ -10,6 +10,7 @@ from sklearn.svm import LinearSVC
 from edgeboxes import edgeboxes
 import util
 import pickle
+from multiprocessing import Pool
 
 class hog_trainer:
     # this class defines a base hog trainer which takes in a folder (str) as an input
@@ -166,21 +167,24 @@ class hog_multi_trainer():
         self.folder = folder
         self.epochs = epochs
         
-    def train(self):
-        for p in self.params:
-            self.maxBoxes, self.blockSize, self.cellSize, self.nbins = p
-            hog = hog_trainer(blockSize = self.blockSize, maxBoxes = self.maxBoxes,\
-                             cellSize = self.cellSize, nbins = self.nbins)
-            hog.hard_negative_mine(self.folder, self.epochs)
-            self.save_config(hog.svm_weights)
+    def single_train(self, p):
+        maxBoxes, blockSize, cellSize, nbins = p
+        hog = hog_trainer(blockSize = blockSize, maxBoxes = maxBoxes,\
+                         cellSize = cellSize, nbins = nbins)
+        hog.hard_negative_mine(self.folder, self.epochs)
+        self.save_config(hog.svm_weights, maxBoxes, blockSize, cellSize, nbins)
         
-    def save_config(self, weights):
+    def save_config(self, weights, maxBoxes, blockSize, cellSize, nbins):
         # uses pickle to save all the information used to train the model
         # filename is chosen according to the configuration of params
-        filename = util.params_to_filename([self.sign, self.maxBoxes, self.blockSize, \
-                                                self.cellSize, self.nbins])
+        filename = util.params_to_filename([self.sign, maxBoxes, blockSize, \
+                                                cellSize, nbins])
         with open(filename, 'wb') as f:  # Python 3: open(..., 'wb')
             pickle.dump(weights, f)
+        
+    def train(self):
+        with Pool(12) as p:
+            p.map(self.single_train, self.params)
 
  
 class hog_predictor():
