@@ -62,6 +62,10 @@ def numpy_to_cv2(np_boxes):
             collision = (self.box_overlap(np.squeeze(boxes[index]), boxes) > \
                          self.overlap_thresh).reshape(-1)
             scores_= np.where(np.expand_dims(collision,axis=1), minf, scores_)
+            
+def platt(score):
+    return 1/(1 + np.exp(score))
+    
 def plot_box(box, color='y'):
     #imported from lab.py from category detection 2019 pytorch version
     #input box must be in cv2/matplotlib format
@@ -126,6 +130,10 @@ def parse_filename(filename):
     params, _ = params.split('.')
     BB, bsize, csize, nbins = [int(x) for x in params.split('_')]
     return sign, (BB, (bsize, bsize), (csize, csize), nbins)
+
+def parse_dictkey(params):
+    BB, bsize, csize, nbins = [int(x) for x in params.split('_')]
+    return BB, (bsize, bsize), (csize, csize), nbins
 
 def read_imgs(folder):
     imgs = []
@@ -244,6 +252,7 @@ def plotResults(results, pOptimal):
             plt.plot(X, y,'ro-')
     plt.xlabel('Area under curve (AUC)')
     plt.ylabel('Speedup')
+    plt.legend(['All models', 'Pareto-Optimal'])
     plt.show()
     
 def identify_pareto(scores):

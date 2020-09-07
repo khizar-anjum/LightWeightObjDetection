@@ -12,6 +12,8 @@ import cv2
 from hog import hog_multi_trainer
 import util
 import numpy as np
+from mdp import mdp_trainer
+import mdptoolbox
 
 params = list(product(*[[500, 1000, 1500, 2000],[(64,64), (32,32), (16,16)], [(16,16), (8,8), (4,4)], [7,8,9]]))
 #params = list(product(*[[(32,32), (16,16), (8,8)], [(8,8), (4,4)], [7,8,9]]))
@@ -19,6 +21,12 @@ epochs = 5
 sign = 'C1'
 folder = 'C:/Users/khizar/Documents/JExt20/Experimental-Data-at-BU/KUL dataset/' + sign + '/Seq 1'
 param_folder = 'params/' + sign
+
+
+#%% ONLINE SIM
+from onlinesim import onlinesim
+o = onlinesim(folder, param_folder, thresh = 0)
+accs, times = o.start_sim()
 
 #%% Demonstration of cv2 hogdescriptor computation
 img = cv2.imread(folder + '/033507.jpg')
@@ -69,3 +77,14 @@ f.close()
 
 #%% Plotting the pareto-Optimal graph
 util.plotResults(notop, opres)
+
+#%% RUN THE MDP
+w = mdp_trainer(opres)
+w.train()
+print(w.get_next_state('1000_32_16_9'))
+
+#%% Exploring the policy inside MATLAB code (FUCK THAT)
+import pickle
+with open('C:/Users/khizar/Documents/JExt20/policy.pkl','rb') as f:
+    policy = pickle.load(f)
+    

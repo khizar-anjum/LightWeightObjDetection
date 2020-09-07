@@ -202,7 +202,7 @@ class hog_predictor():
         self.load_config(filename)
         
     def info(self):
-        return {self.edgebox.maxBoxes, self.hog.blockSize, self.hog.cellSize, self.nbins}
+        return {self.edgebox.maxBoxes, self.blockSize, self.cellSize, self.nbins}
         
     def predict(self, image, n, overlap_thresh):
         boxes, scores = self.edgebox.getproposals(image) #edgeboxes also gives scores
@@ -223,7 +223,6 @@ class hog_predictor():
         else:
             self.hog_desc = cv2.HOGDescriptor(self.winSize, self.blockSize, self.blockStride,\
                                           self.cellSize, self.nbins) 
-        print(self.svm_weights.shape)
         self.hog_desc.setSVMDetector(np.expand_dims(self.svm_weights.astype(np.float32),axis=0))
         
     def infer(self, image, proposals):
@@ -235,3 +234,9 @@ class hog_predictor():
             s = self.svm_weights[:-1] @ hogf + self.svm_weights[-1]
             scores.append(s[0])
         return np.expand_dims(np.array(scores),1)
+    
+    def get_score_of_tracked_frame(self, frame):
+        # get the score of the tracked frame, so we can know if we need to retrigger MDP (edgeboxes)
+        hogf = self.hog_desc.compute(cv2.resize(frame, self.winSize))
+        s = self.svm_weights[:-1] @ hogf + self.svm_weights[-1]
+        return s

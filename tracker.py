@@ -30,4 +30,4 @@ class tracker():
         return self.tracker.init(frame, bbox0)
         
     def update(self, frame):
-        return self.tracker(frame)
+        return self.tracker.update(frame)
